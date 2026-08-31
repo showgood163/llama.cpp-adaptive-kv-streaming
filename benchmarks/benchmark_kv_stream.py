@@ -34,7 +34,6 @@ KV_STREAM_TRACE_RE = re.compile(
 )
 
 
-
 def parse_token_count(value: str) -> int:
     text = value.strip().lower()
     multiplier = 1
@@ -47,7 +46,7 @@ def parse_token_count(value: str) -> int:
         ("m", 1024 * 1024),
     ):
         if text.endswith(suffix):
-            text = text[:-len(suffix)]
+            text = text[: -len(suffix)]
             multiplier = factor
             break
     try:
@@ -64,7 +63,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=__doc__,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--model", type=Path, required=True, help="Qwen3.8-27B GGUF model")
+    parser.add_argument(
+        "--model", type=Path, required=True, help="Qwen3.8-27B GGUF model"
+    )
     parser.add_argument(
         "--max-context",
         type=parse_token_count,
@@ -96,11 +97,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--decode-tokens", type=int, default=256)
     parser.add_argument(
-        "--batch-size", type=int, default=256,
+        "--batch-size",
+        type=int,
+        default=256,
         help="logical maximum prompt batch size",
     )
     parser.add_argument(
-        "--ubatch-size", type=int, default=256,
+        "--ubatch-size",
+        type=int,
+        default=256,
         help="physical maximum batch size; must not exceed --batch-size",
     )
     parser.add_argument("--cache-type-k", default="f16")
@@ -114,6 +119,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--fixed-pool-mib",
         type=int,
         help="use exactly this KV pool size and skip per-context probing",
+    )
+    parser.add_argument(
+        "--uvm",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="test the stock unified-memory baseline: no KV streaming "
+        "(--kv-stream-stage-mib 0) with GGML_CUDA_ENABLE_UNIFIED_MEMORY set",
     )
     parser.add_argument(
         "--trace-kv-stream",
@@ -225,6 +237,7 @@ def http_json(url: str, payload: dict | None, timeout: int) -> dict:
 def clean_server_env(
     cuda_visible_devices: str | None,
     trace_kv_stream: bool = False,
+    uvm: bool = False,
 ) -> dict[str, str]:
     env = os.environ.copy()
     for name in UVM_ENV_NAMES:
@@ -233,6 +246,8 @@ def clean_server_env(
     env.pop("LLAMA_KV_STREAM_TRACE", None)
     if trace_kv_stream:
         env["LLAMA_KV_STREAM_TRACE"] = "1"
+    if uvm:
+        env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
     if cuda_visible_devices is not None:
         env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
     return env
@@ -298,6 +313,7 @@ class Server:
                 env=clean_server_env(
                     args.cuda_visible_devices,
                     args.trace_kv_stream,
+                    args.uvm,
                 ),
                 stdout=self.log_file,
                 stderr=subprocess.STDOUT,
@@ -377,9 +393,7 @@ def prepare_server(
     suffix = tokenized.get("tokens")
     if not suffix or not all(isinstance(token, int) for token in suffix):
         raise RuntimeError(f"unexpected tokenize response: {tokenized}")
-    fill_token_id = (
-        args.fill_token_id if args.fill_token_id is not None else suffix[0]
-    )
+    fill_token_id = args.fill_token_id if args.fill_token_id is not None else suffix[0]
     http_json(
         server.url("/completion"),
         {
@@ -435,6 +449,7 @@ def resume_signature(args: argparse.Namespace, capacities: list[int]) -> dict:
         "cache_type_k": args.cache_type_k,
         "cache_type_v": args.cache_type_v,
         "fixed_pool_mib": args.fixed_pool_mib,
+        "uvm": args.uvm,
         "trace_kv_stream": args.trace_kv_stream,
         "capacities": capacities,
         "decode_tokens": args.decode_tokens,
@@ -456,17 +471,13 @@ def resume_signature(args: argparse.Namespace, capacities: list[int]) -> dict:
 def validate_resume(metadata: dict | None, signature: dict, path: Path) -> None:
     if metadata is None:
         raise SystemExit(f"existing result file has no metadata record: {path}")
-    mismatches = [
-        key for key, value in signature.items() if metadata.get(key) != value
-    ]
+    mismatches = [key for key, value in signature.items() if metadata.get(key) != value]
     if mismatches:
         details = ", ".join(
             f"{key}={metadata.get(key)!r} (requested {signature[key]!r})"
             for key in mismatches
         )
-        raise SystemExit(
-            f"cannot resume {path} with different settings: {details}"
-        )
+        raise SystemExit(f"cannot resume {path} with different settings: {details}")
 
 
 def git_revision() -> str:
@@ -489,8 +500,7 @@ def probe_pool(
     results_path: Path,
 ) -> int:
     print(
-        f"[{context_capacity}] probing VRAM with "
-        f"{args.probe_pool_mib} MiB pool",
+        f"[{context_capacity}] probing VRAM with {args.probe_pool_mib} MiB pool",
         flush=True,
     )
     server: Server | None = None
@@ -526,6 +536,8 @@ def probe_pool(
         if server is not None:
             server.stop()
         wait_for_release(args, baseline_used_mib)
+
+
 def parse_kv_stream_trace(log_path: Path) -> dict:
     text = log_path.read_text(errors="replace")
     samples = []
@@ -585,8 +597,6 @@ def parse_kv_stream_trace(log_path: Path) -> dict:
         ),
         "stream_repartitions": text.count("adaptive KV partition:"),
     }
-
-
 
 
 def run_measurement(
@@ -748,8 +758,7 @@ def require_matplotlib():
         import matplotlib.pyplot as plt
     except ModuleNotFoundError as exc:
         raise SystemExit(
-            "Matplotlib is required. Install it with: "
-            "python3 -m pip install matplotlib"
+            "Matplotlib is required. Install it with: python3 -m pip install matplotlib"
         ) from exc
     return plt
 
@@ -842,10 +851,9 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("ubatch size must not exceed batch size")
     if args.fixed_pool_mib is not None and args.fixed_pool_mib <= 0:
         raise SystemExit("fixed pool must be positive")
-    if (
-        args.pool_retries < 0
-        or args.release_slack_mib < 0
-    ):
+    if args.uvm and args.fixed_pool_mib is not None:
+        raise SystemExit("--uvm and --fixed-pool-mib are mutually exclusive")
+    if args.pool_retries < 0 or args.release_slack_mib < 0:
         raise SystemExit("retry count and release slack must not be negative")
     if args.max_pool_mib is not None and args.max_pool_mib < args.probe_pool_mib:
         raise SystemExit("maximum pool must be at least the probe pool")
@@ -868,9 +876,7 @@ def main(argv: list[str] | None = None) -> int:
 
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     if args.output_dir is None:
-        args.output_dir = (
-            ROOT / "benchmarks/results" / f"adaptive-kv-sweep-{stamp}"
-        )
+        args.output_dir = ROOT / "benchmarks/results" / f"adaptive-kv-sweep-{stamp}"
     args.output_dir.mkdir(parents=True, exist_ok=True)
     logs_dir = args.output_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -922,31 +928,47 @@ def main(argv: list[str] | None = None) -> int:
         for index, context_capacity in enumerate(capacities, start=1):
             if context_capacity in rows:
                 print(
-                    f"[{index}/{len(capacities)}] {context_capacity}: "
-                    "already complete",
+                    f"[{index}/{len(capacities)}] {context_capacity}: already complete",
                     flush=True,
                 )
                 continue
             print(
-                f"[{index}/{len(capacities)}] context capacity "
-                f"{context_capacity}",
+                f"[{index}/{len(capacities)}] context capacity {context_capacity}",
                 flush=True,
             )
             try:
-                if args.fixed_pool_mib is None:
+                if args.uvm:
+                    measurement = run_measurement(
+                        args,
+                        context_capacity,
+                        0,
+                        baseline.used_mib,
+                        logs_dir,
+                    )
+                elif args.fixed_pool_mib is None:
                     selected_pool = probe_pool(
-                        args, context_capacity, baseline.used_mib,
-                        logs_dir, results_path,
+                        args,
+                        context_capacity,
+                        baseline.used_mib,
+                        logs_dir,
+                        results_path,
                     )
                     measurement = benchmark_with_backoff(
-                        args, context_capacity, selected_pool,
-                        baseline.used_mib, logs_dir, results_path,
+                        args,
+                        context_capacity,
+                        selected_pool,
+                        baseline.used_mib,
+                        logs_dir,
+                        results_path,
                     )
                 else:
                     selected_pool = args.fixed_pool_mib
                     measurement = run_measurement(
-                        args, context_capacity, selected_pool,
-                        baseline.used_mib, logs_dir,
+                        args,
+                        context_capacity,
+                        selected_pool,
+                        baseline.used_mib,
+                        logs_dir,
                     )
                 append_jsonl(results_path, measurement)
                 rows[context_capacity] = measurement
