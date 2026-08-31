@@ -86,7 +86,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--server",
         type=Path,
-        default=ROOT / "build/bin/llama-server",
+        default="/usr/bin/llama-server",
         help="adaptive KV streaming llama-server binary",
     )
     parser.add_argument(
@@ -103,8 +103,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--ubatch-size", type=int, default=256,
         help="physical maximum batch size; must not exceed --batch-size",
     )
-    parser.add_argument("--cache-type-k", default="q8_0")
-    parser.add_argument("--cache-type-v", default="q4_0")
+    parser.add_argument("--cache-type-k", default="f16")
+    parser.add_argument("--cache-type-v", default="f16")
     parser.add_argument("--probe-pool-mib", type=int, default=64)
     parser.add_argument("--pool-step-mib", type=int, default=32)
     parser.add_argument("--pool-backoff-mib", type=int, default=64)
@@ -117,7 +117,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--trace-kv-stream",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="enable and parse adaptive KV residency trace logging",
     )
     parser.add_argument("--gpu-index", type=int, default=0)
