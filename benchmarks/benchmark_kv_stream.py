@@ -532,12 +532,17 @@ def parse_kv_stream_trace(log_path: Path) -> dict:
     for match in KV_STREAM_TRACE_RE.finditer(text):
         active_tokens = int(match.group(1))
         resident_pages = int(match.group(2))
+        ring_slots = int(match.group(3))
         samples.append(
             {
                 "active_tokens": active_tokens,
                 "active_pages": (active_tokens + 255) // 256,
                 "resident_pages": resident_pages,
-                "ring_slots": int(match.group(3)),
+                "ring_slots": ring_slots,
+                "deadline_samples": int(match.group(4)),
+                "deadline_misses": int(match.group(5)),
+                "copy_busy_pct": float(match.group(6)),
+                "peak_occupancy": int(match.group(7)),
             }
         )
     streamed = [
@@ -545,12 +550,12 @@ def parse_kv_stream_trace(log_path: Path) -> dict:
         for sample in samples
         if sample["active_pages"] > sample["resident_pages"]
     ]
+    deadline_samples = sum(sample["deadline_samples"] for sample in samples)
+    deadline_misses = sum(sample["deadline_misses"] for sample in samples)
     return {
         "streaming_active": bool(streamed),
         "stream_first_active_tokens": (
-            min(sample["active_tokens"] for sample in streamed)
-            if streamed
-            else None
+            min(sample["active_tokens"] for sample in streamed) if streamed else None
         ),
         "stream_trace_samples": len(samples),
         "stream_max_active_pages": max(
@@ -561,6 +566,22 @@ def parse_kv_stream_trace(log_path: Path) -> dict:
         ),
         "stream_max_ring_slots": max(
             (sample["ring_slots"] for sample in samples), default=None
+        ),
+        "stream_deadline_samples": deadline_samples or None,
+        "stream_deadline_misses": deadline_misses or None,
+        "stream_deadline_miss_ratio": (
+            deadline_misses / deadline_samples if deadline_samples else None
+        ),
+        "stream_max_copy_busy_pct": max(
+            (sample["copy_busy_pct"] for sample in samples), default=None
+        ),
+        "stream_max_peak_occupancy_ratio": max(
+            (
+                sample["peak_occupancy"] / sample["ring_slots"]
+                for sample in samples
+                if sample["ring_slots"] > 0
+            ),
+            default=None,
         ),
         "stream_repartitions": text.count("adaptive KV partition:"),
     }
@@ -708,6 +729,11 @@ def write_csv(path: Path, rows: dict[int, dict]) -> None:
         "stream_max_active_pages",
         "stream_min_resident_pages",
         "stream_max_ring_slots",
+        "stream_deadline_samples",
+        "stream_deadline_misses",
+        "stream_deadline_miss_ratio",
+        "stream_max_copy_busy_pct",
+        "stream_max_peak_occupancy_ratio",
         "stream_repartitions",
     ]
     with path.open("w", newline="") as stream:
